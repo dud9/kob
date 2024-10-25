@@ -42,37 +42,10 @@ public class RankServiceImpl implements RankService {
             return getListFromDB(pageQuery, searchVO);
         }
 
-        // 尝试从Redis获取数据
-        List<RankRespVO> rankings = getRankingsFromCache(pageQuery);
-        if (rankings == null || rankings.isEmpty()) {
+        // 检查缓存是否存在
+        Boolean hasKey = redisTemplate.hasKey(RANKING_KEY);
+        if (Boolean.FALSE.equals(hasKey)) {
             return getListFromDB(pageQuery, searchVO);
-        }
-
-        // 获取总数
-        Object totalObj = redisTemplate.opsForValue().get(TOTAL_COUNT_KEY);
-        long total = totalObj != null ?
-                Long.valueOf(totalObj.toString()) :
-                userService.count();
-
-        return PageMap.data(total, rankings);
-    }
-
-    private List<RankRespVO> getRankingsFromCache(PageQuery pageQuery) {
-        // 首先获取所有排名数据用于计算实际排名
-        Set<Object> allRankings = redisTemplate.opsForZSet().reverseRange(RANKING_KEY, 0, -1);
-        if (allRankings == null || allRankings.isEmpty()) {
-            refreshRankingCache();
-            allRankings = redisTemplate.opsForZSet().reverseRange(RANKING_KEY, 0, -1);
-            if (allRankings == null) {
-                return Collections.emptyList();
-            }
-        }
-
-        // 创建排名映射
-        Map<Integer, Integer> rankMap = new HashMap<>();
-        int rank = 1;
-        for (Object userId : allRankings) {
-            rankMap.put((Integer) userId, rank++);
         }
 
         // 获取分页数据
@@ -81,20 +54,33 @@ public class RankServiceImpl implements RankService {
         Set<Object> pageRange = redisTemplate.opsForZSet().reverseRange(RANKING_KEY, start, end);
 
         if (pageRange == null || pageRange.isEmpty()) {
-            return Collections.emptyList();
+            return getListFromDB(pageQuery, searchVO);
         }
 
+        // 获取总排名用于计算实际排名
+        Set<Object> allRankings = redisTemplate.opsForZSet().reverseRange(RANKING_KEY, 0, -1);
+        Map<Integer, Integer> rankMap = new HashMap<>();
+        int rank = 1;
+        for (Object userId : allRankings) {
+            rankMap.put((Integer) userId, rank++);
+        }
+
+        // 处理分页数据
         List<RankRespVO> result = new ArrayList<>();
         for (Object userId : pageRange) {
             UserDO user = userService.getById((Integer) userId);
             if (user != null) {
                 RankRespVO rankVO = UserConverter.INSTANCE.do2RankVO(user);
-                rankVO.setRankNum(rankMap.get((Integer) userId)); // 设置实际排名
+                rankVO.setRankNum(rankMap.get((Integer) userId));
                 result.add(rankVO);
             }
         }
 
-        return result;
+        // 获取总数
+        Object totalObj = redisTemplate.opsForValue().get(TOTAL_COUNT_KEY);
+        long total = totalObj != null ? Long.parseLong(totalObj.toString()) : userService.count();
+
+        return PageMap.data(total, result);
     }
 
     private PageMap<RankRespVO> getListFromDB(PageQuery pageQuery, RecordSearchVO searchVO) {
@@ -117,7 +103,6 @@ public class RankServiceImpl implements RankService {
                 })
                 .collect(Collectors.toList());
 
-        // 获取总数
         long total = userService.count(Wrappers.<UserDO>lambdaQuery()
                 .ne(UserDO::getId, 1)
                 .like(StringUtils.hasText(searchVO.getName()),
@@ -127,13 +112,13 @@ public class RankServiceImpl implements RankService {
         return PageMap.data(total, data);
     }
 
-
-    @Scheduled(fixedRate = 3600000) // 每小时执行一次
+    @Scheduled(fixedRate = 3600000)
     public void refreshRankingCache() {
         List<UserDO> users = userService.list(
                 Wrappers.<UserDO>lambdaQuery()
                         .ne(UserDO::getId, 1)
                         .orderByDesc(UserDO::getRating)
+                        .orderByAsc(UserDO::getCreateTime)  // 添加创建时间升序排序
         );
 
         redisTemplate.delete(RANKING_KEY);
@@ -141,9 +126,12 @@ public class RankServiceImpl implements RankService {
 
         if (!users.isEmpty()) {
             for (UserDO user : users) {
-                redisTemplate.opsForZSet().add(RANKING_KEY, user.getId(), user.getRating());
+                // 使用复合分数：rating * 1000000000000 + (Long.MAX_VALUE - createTime.getTime())
+                // 这样可以保证相同rating的情况下，创建时间早的排在前面
+                long createTimeScore = Long.MAX_VALUE - user.getCreateTime().getTime();
+                double score = user.getRating() * 1000000000000.0 + createTimeScore;
+                redisTemplate.opsForZSet().add(RANKING_KEY, user.getId(), score);
             }
-            // 确保使用Long类型存储总数
             redisTemplate.opsForValue().set(TOTAL_COUNT_KEY, Long.valueOf(users.size()),
                     CACHE_EXPIRE_TIME, TimeUnit.SECONDS);
             redisTemplate.expire(RANKING_KEY, CACHE_EXPIRE_TIME, TimeUnit.SECONDS);
@@ -151,13 +139,19 @@ public class RankServiceImpl implements RankService {
     }
 
     public void updateUserRating(Integer userId, Integer newRating) {
-        userService.update(
-                Wrappers.<UserDO>lambdaUpdate()
-                        .eq(UserDO::getId, userId)
-                        .set(UserDO::getRating, newRating)
-        );
+        UserDO user = userService.getById(userId);
+        if (user != null) {
+            userService.update(
+                    Wrappers.<UserDO>lambdaUpdate()
+                            .eq(UserDO::getId, userId)
+                            .set(UserDO::getRating, newRating)
+            );
 
-        redisTemplate.opsForZSet().add(RANKING_KEY, userId, newRating);
+            // 更新缓存时也使用复合分数
+            long createTimeScore = Long.MAX_VALUE - user.getCreateTime().getTime();
+            double score = newRating * 1000000000000.0 + createTimeScore;
+            redisTemplate.opsForZSet().add(RANKING_KEY, userId, score);
+        }
     }
 
     public int calculateNewRating(int playerRating, int opponentRating, boolean won) {
