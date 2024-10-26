@@ -15,11 +15,30 @@ const refGameMap = ref();
 const recordStore = useRecordStore();
 const { gameResult, isReplayFinished } = storeToRefs(recordStore);
 
-const recordPaused = ref(false);
+const recordPaused = ref(false); // 当前是否暂停
+const isAutoPaused = ref(false); // 是否是自动暂停（页面隐藏导致的暂停）
+let lastPauseTime: number | null = null; // 记录暂停时的时间戳
 
-const pause = () => refGameMap.value?.pauseVideo?.();
-const replay = () => refGameMap.value?.replayVideo?.();
-const resume = () => refGameMap.value?.resumeVideo?.();
+const pause = () => {
+  if (refGameMap.value?.pauseVideo) {
+    refGameMap.value.pauseVideo();
+    recordPaused.value = true;
+  }
+};
+
+const resume = () => {
+  if (refGameMap.value?.resumeVideo) {
+    refGameMap.value.resumeVideo();
+    recordPaused.value = false;
+  }
+};
+
+const replay = () => {
+  if (refGameMap.value?.replayVideo) {
+    refGameMap.value.replayVideo();
+    recordPaused.value = false;
+  }
+};
 
 const goBack = () => {
   pause();
@@ -28,17 +47,41 @@ const goBack = () => {
 };
 
 const doPause = () => {
-  recordPaused.value ? resume() : pause();
-  recordPaused.value = !recordPaused.value;
+  if (recordPaused.value) {
+    resume();
+  } else {
+    pause();
+  }
+  isAutoPaused.value = false;
 };
 
 const handleVisibilityChange = () => {
+  if (!refGameMap.value)
+    return;
+
   if (document.hidden) {
-    pause();
-  } else if (!recordPaused.value) {
-    replay();
+    if (!recordPaused.value) {
+      isAutoPaused.value = true;
+      lastPauseTime = Date.now(); // 记录暂停时间
+      pause();
+    }
+  } else {
+    if (isAutoPaused.value) {
+      isAutoPaused.value = false;
+      // 如果暂停时间很短（比如小于100ms），可以考虑不进行任何处理
+      const pauseDuration = lastPauseTime ? Date.now() - lastPauseTime : 0;
+      if (pauseDuration < 100) {
+        return;
+      }
+      // 使用 nextTick 确保状态更新后再恢复播放
+      nextTick(() => {
+        useTimeoutFn(resume, 500);
+      });
+    }
   }
 };
+
+let visibilityChangeListenerAdded = false;
 
 onMounted(() => {
   useLottie({
@@ -46,11 +89,22 @@ onMounted(() => {
     path: '/lottie/trophy.json',
   });
 
-  document.addEventListener('visibilitychange', handleVisibilityChange);
+  if (!visibilityChangeListenerAdded) {
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    visibilityChangeListenerAdded = true;
+  }
 });
 
 onUnmounted(() => {
-  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  if (refGameMap.value) {
+    refGameMap.value.destroy(); // 销毁 GameMap 实例
+    refGameMap.value = null; // 清空引用
+  }
+  pause();
+  if (visibilityChangeListenerAdded) {
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    visibilityChangeListenerAdded = false;
+  }
 });
 </script>
 

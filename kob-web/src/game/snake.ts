@@ -8,6 +8,15 @@ export interface SnakeInfo {
   c: number
 }
 
+export interface SnakeState {
+  cells: SnakeCell[]
+  nextCell: SnakeCell | null
+  directions: number[]
+  status: SnakeStatus
+  step: number
+  eyeDirection: number
+}
+
 // idle 表示静止，move 表示正在移动，die 表示死亡
 export type SnakeStatus = 'idle' | 'move' | 'die';
 
@@ -18,7 +27,7 @@ export class Snake {
   private cells: SnakeCell[];
   private nextCell: SnakeCell | null = null; // 下一步目标单元格
 
-  private speed = 5; // 每秒走五个格子
+  private speed = 3; // 每秒走3个格子
 
   public directions: number[] = [];
   // 下一步的指令，移动的方向，
@@ -98,34 +107,57 @@ export class Snake {
   }
 
   private move() {
-    const {
-      speed,
-      gameMap: { timeDelta },
-      nextCell,
-      cells,
-      eps,
-    } = this;
+    const { speed, gameMap: { timeDelta }, nextCell, cells, eps } = this;
+    const moveDistance = speed * timeDelta / 1000; // 每帧移动距离
 
-    const { x: headX, y: headY } = cells[0];
-    const [dx, dy] = [nextCell!.x - headX, nextCell!.y - headY];
+    // 蛇头移动
+    const head = cells[0];
+    const [dx, dy] = [nextCell!.x - head.x, nextCell!.y - head.y];
     const distance = Math.sqrt(dx * dx + dy * dy);
 
     if (distance < eps) {
-      this.cells[0] = nextCell!; // 添加一个新蛇头
+      // 到达目标位置
+      cells[0] = nextCell!;
       this.nextCell = null;
-      this.status = 'idle'; // 走完了，停下来
-      if (!this.checkTailIncreasing()) // 蛇尾不增加，需要删除旧蛇尾
-        this.cells.pop();
-    } else {
-      const moveDistance = speed * timeDelta / 1000; // 每两帧之间走的移动距离
-      this.cells[0].x += moveDistance * dx / distance;
-      this.cells[0].y += moveDistance * dy / distance;
+      this.status = 'idle';
 
-      if (!this.checkTailIncreasing()) { // 蛇尾不增加，需要移动蛇尾到上一节点
-        const [{ x: nx, y: ny }, tail] = cells.filter((_, idx) => idx >= cells.length - 2);
-        const [tailDx, tailDy] = [nx - tail.x, ny - tail.y];
-        tail.x += moveDistance * tailDx / distance;
-        tail.y += moveDistance * tailDy / distance;
+      if (!this.checkTailIncreasing()) {
+        cells.pop();
+      }
+    } else {
+      // 移动蛇头
+      const moveRatio = moveDistance / distance;
+      head.x += dx * moveRatio;
+      head.y += dy * moveRatio;
+
+      // 移动蛇身
+      for (let i = 1; i < cells.length; i++) {
+        const curr = cells[i];
+        const prev = cells[i - 1];
+        const [segDx, segDy] = [prev.x - curr.x, prev.y - curr.y];
+        const segDistance = Math.sqrt(segDx * segDx + segDy * segDy);
+
+        // 如果与前一节距离过大，则移动当前节
+        if (segDistance > 1) {
+          const targetDistance = 1; // 理想间距
+          const segMoveRatio = (segDistance - targetDistance) / segDistance;
+          curr.x += segDx * segMoveRatio;
+          curr.y += segDy * segMoveRatio;
+        }
+      }
+
+      // 特殊处理蛇尾
+      if (!this.checkTailIncreasing()) {
+        const tail = cells[cells.length - 1];
+        const beforeTail = cells[cells.length - 2];
+        const [tailDx, tailDy] = [beforeTail.x - tail.x, beforeTail.y - tail.y];
+        const tailDistance = Math.sqrt(tailDx * tailDx + tailDy * tailDy);
+
+        if (tailDistance > 1) {
+          const tailMoveRatio = moveDistance / tailDistance;
+          tail.x += tailDx * tailMoveRatio;
+          tail.y += tailDy * tailMoveRatio;
+        }
       }
     }
   }
@@ -223,12 +255,43 @@ export class Snake {
 
   private addMovementEffect(ctx: CanvasRenderingContext2D, L: number, baseColor: string) {
     if (this.cells.length < 2) {
-      // 如果蛇的长度小于2，只画一个圆
+      // 如果蛇的长度小于2，只画一个圆，并确保绘制眼睛
       const { x, y } = this.cells[0];
       ctx.fillStyle = baseColor;
       ctx.beginPath();
       ctx.arc(x * L, y * L, L / 2, 0, Math.PI * 2);
       ctx.fill();
+
+      // 绘制眼睛
+      const eyeSize = L * 0.15;
+      const eyeOffset = L * 0.2;
+      for (let i = 0; i < 2; i++) {
+        const eyeX = x * L + this.eyeDx[this.eyeDirection][i] * eyeOffset;
+        const eyeY = y * L + this.eyeDy[this.eyeDirection][i] * eyeOffset;
+
+        // 绘制眼白
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(eyeX, eyeY, eyeSize, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 绘制瞳孔
+        const pupilSize = eyeSize * 0.6;
+        const pupilOffset = eyeSize * 0.2;
+        const pupilX = eyeX + this.eyeDx[this.eyeDirection][i] * pupilOffset;
+        const pupilY = eyeY + this.eyeDy[this.eyeDirection][i] * pupilOffset;
+
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(pupilX, pupilY, pupilSize, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 绘制眼睛高光
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(pupilX - pupilSize * 0.3, pupilY - pupilSize * 0.3, pupilSize * 0.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
       return;
     }
 
@@ -288,5 +351,26 @@ export class Snake {
     const g = clamp(Number.parseInt(hex.substr(2, 2), 16) + amount);
     const b = clamp(Number.parseInt(hex.substr(4, 2), 16) + amount);
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+  }
+
+  getState(): SnakeState {
+    return {
+      cells: this.cells.map(cell => new SnakeCell(cell.r, cell.c)),
+      nextCell: this.nextCell ? new SnakeCell(this.nextCell.r, this.nextCell.c) : null,
+      directions: [...this.directions],
+      status: this.status,
+      step: this.step,
+      eyeDirection: this.eyeDirection,
+    };
+  }
+
+  // 恢复状态
+  setState(state: SnakeState) {
+    this.cells = state.cells.map(cell => new SnakeCell(cell.r, cell.c));
+    this.nextCell = state.nextCell ? new SnakeCell(state.nextCell.r, state.nextCell.c) : null;
+    this.directions = [...state.directions];
+    this.status = state.status;
+    this.step = state.step;
+    this.eyeDirection = state.eyeDirection;
   }
 }

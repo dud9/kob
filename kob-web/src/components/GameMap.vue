@@ -30,8 +30,8 @@ function createGameMap() {
 }
 
 const replayVideo = () => createGameMap();
-const pauseVideo = () => gameMap?.recordFn?.pause(); // 暂停
-const resumeVideo = () => gameMap?.recordFn?.resume(); // 取消暂停
+const pauseVideo = () => gameMap?.pause(); // 暂停
+const resumeVideo = () => gameMap?.resume(); // 取消暂停
 
 onMounted(createGameMap);
 

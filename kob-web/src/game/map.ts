@@ -1,10 +1,14 @@
-import type { Pausable } from '@vueuse/core';
 import { Game } from './game';
-import { Snake } from './snake';
+import { Snake, type SnakeState } from './snake';
 import { Wall } from './wall';
 
 const COLOR_EVEN = '#C3944E';
 const COLOR_ODD = '#A57332';
+
+interface GameState {
+  currentStep: number
+  snakeStates: SnakeState[]
+}
 
 export class GameMap extends Game {
   private destroyed = false;
@@ -22,8 +26,15 @@ export class GameMap extends Game {
     new Snake({ id: 1, color: '#CB272D', r: 1, c: this.cols - 2 }, this),
   ];
 
-  recordFn: Pausable | null = null;
-  task: Pausable | null = null;
+  task: NodeJS.Timeout | null = null;
+
+  private lastStepTime: number = 0;
+  private currentStep: number = 0;
+  private stepInterval: number = 300;
+  private isPlaying: boolean = false;
+  private animationFrameId: number | null = null;
+
+  private gameState: GameState | null = null;
 
   constructor(
     public ctx: CanvasRenderingContext2D,
@@ -78,27 +89,27 @@ export class GameMap extends Game {
     if (this.destroyed)
       return; // 如果已销毁，不执行更新
 
-    // 1. 更新尺寸
     this.updateSize();
-
-    // 2. 更新游戏状态
     const { isRecording } = useRecordStore();
 
-    if (isRecording) {
+    const fn = () => {
       if (this.checkSnakeReady()) {
         this.nextStep();
+        return true;
       }
-    } else if (!this.task && this.checkSnakeReady()) {
-      this.task = useIntervalFn(() => {
-        if (this.checkSnakeReady()) {
-          this.nextStep();
-          return true;
-        }
-        return false;
-      }, 100);
+      if (this.task) {
+        clearInterval(this.task);
+        this.task = null;
+      }
+      return false;
+    };
+
+    if (isRecording) {
+      fn();
+    } else if (!this.task && fn()) {
+      this.task = setInterval(fn, 100);
     }
 
-    // 3. 渲染
     this.render();
   }
 
@@ -108,16 +119,16 @@ export class GameMap extends Game {
 
     const { ctx, baseCanvas } = this;
 
-    // 1. 确保基础层是最新的
+    // 确保基础层是最新的
     this.renderBase();
 
-    // 2. 清空当前画布
+    // 清空当前画布
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-    // 3. 绘制基础层
+    // 绘制基础层
     ctx.drawImage(baseCanvas, 0, 0);
 
-    // 4. 绘制蛇
+    // 绘制蛇
     this.snakes.forEach(snake => snake.render());
   }
 
@@ -137,33 +148,115 @@ export class GameMap extends Game {
   }
 
   playRecord() {
-    const {
-      aSteps,
-      bSteps,
-      gameResult,
-      setReplayFinished,
-    } = useRecordStore();
+    const { aSteps, bSteps } = useRecordStore();
     if (!aSteps || !bSteps)
       return;
 
-    let k = 0;
-    const [snake0, snake1] = this.snakes;
-    let _recordFn: Pausable | null = null;
+    // 重置游戏状态
+    this.currentStep = 0;
+    this.lastStepTime = performance.now();
+    this.isPlaying = true;
 
-    _recordFn = this.recordFn = useIntervalFn(() => {
-      if (k >= aSteps.length - 1) {
+    // 在启动新的动画循环之前，取消旧的动画帧
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+
+    this.animationFrameId = requestAnimationFrame(this.animate.bind(this));
+  }
+
+  // 保存游戏状态
+  private saveGameState() {
+    this.gameState = {
+      currentStep: this.currentStep,
+      snakeStates: this.snakes.map(snake => snake.getState()),
+    };
+  }
+
+  // 恢复游戏状态
+  private restoreGameState() {
+    if (this.gameState) {
+      this.currentStep = this.gameState.currentStep;
+      this.snakes.forEach((snake, index) => {
+        snake.setState(this.gameState!.snakeStates[index]);
+      });
+    }
+  }
+
+  pause() {
+    if (this.isPlaying) {
+      this.isPlaying = false;
+      this.saveGameState();
+
+      if (this.animationFrameId !== null) {
+        cancelAnimationFrame(this.animationFrameId);
+        this.animationFrameId = null;
+      }
+    }
+  }
+
+  resume() {
+    if (!this.isPlaying) {
+      this.restoreGameState();
+      this.isPlaying = true;
+
+      // 重置 lastStepTime 为当前时间戳
+      this.lastStepTime = performance.now();
+
+      // 在启动新的动画循环之前，取消旧的动画帧
+      if (this.animationFrameId !== null) {
+        cancelAnimationFrame(this.animationFrameId);
+        this.animationFrameId = null;
+      }
+
+      this.animationFrameId = requestAnimationFrame(this.animate.bind(this));
+    }
+  }
+
+  private animate(currentTime: number) {
+    if (!this.isPlaying)
+      return;
+
+    const { aSteps, bSteps, gameResult, setReplayFinished } = useRecordStore();
+    if (!aSteps || !bSteps)
+      return;
+
+    const [snake0, snake1] = this.snakes;
+
+    let deltaTime = currentTime - this.lastStepTime;
+
+    // 限制 deltaTime 的最大值，防止动画跳跃
+    const maxDeltaTime = this.stepInterval * 2; // 允许一次最多跳过2个间隔
+    deltaTime = Math.min(deltaTime, maxDeltaTime);
+
+    if (deltaTime >= this.stepInterval) {
+      if (this.currentStep >= aSteps.length - 1) {
         if (['draw', 'playerBWon'].includes(gameResult))
           snake0.status = 'die';
         if (['draw', 'playerAWon'].includes(gameResult))
           snake1.status = 'die';
-        _recordFn?.pause(); // 这里注意 this 的指向问题
+        this.isPlaying = false;
         setReplayFinished(true);
-      } else {
-        snake0.setDirection(Number.parseInt(aSteps[k]));
-        snake1.setDirection(Number.parseInt(bSteps[k]));
+
+        // 游戏结束，取消动画帧
+        if (this.animationFrameId !== null) {
+          cancelAnimationFrame(this.animationFrameId);
+          this.animationFrameId = null;
+        }
+
+        return;
       }
-      k++;
-    }, 300);
+
+      snake0.setDirection(Number.parseInt(aSteps[this.currentStep]));
+      snake1.setDirection(Number.parseInt(bSteps[this.currentStep]));
+
+      this.currentStep++;
+      this.lastStepTime = currentTime - (deltaTime % this.stepInterval);
+    }
+
+    this.render();
+    this.animationFrameId = requestAnimationFrame(this.animate.bind(this));
   }
 
   addListeningEvents() {
@@ -249,11 +342,17 @@ export class GameMap extends Game {
   }
 
   beforeDestroy() {
-    this.recordFn?.pause();
-    this.task?.pause();
+    this.pause();
+    if (this.task) {
+      clearInterval(this.task);
+      this.task = null;
+    }
   }
 
   destroy() {
     this.destroyed = true;
+    this.pause(); // 确保暂停动画
+    // 添加调用 super.destroy()
+    super.destroy();
   }
 }
