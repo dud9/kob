@@ -1,4 +1,4 @@
-import type { ApiResponseWithoutData, PageDataResponse, PageQuery, Record } from '~/types';
+import type { ApiResponse, ApiResponseWithoutData, PageDataResponse, PageQuery, Record } from '~/types';
 import api from '~/utils/axios';
 
 export const RecordApi = {
@@ -7,4 +7,7 @@ export const RecordApi = {
 
   deleteRecord: (id: number) =>
     api.delete<ApiResponseWithoutData>('/api/record/delete', { params: { id } }),
+
+  getById: (id: number) =>
+    api.get<ApiResponse<Record>>('/api/record/getById', { params: { id } }),
 };

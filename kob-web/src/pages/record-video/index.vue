@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import type { PlayerInfo } from '../utils/types';
-import GameResult from './video/GameResult.vue';
-import PlayerInfoCard from './video/PlayerInfoCard.vue';
+import type { PlayerInfo } from './utils/types';
+import GameResult from './components/GameResult.vue';
+import PlayerInfoCard from './components/PlayerInfoCard.vue';
 
-const props = defineProps<{
-  playerInfoList: PlayerInfo[]
-}>();
+const props = withDefaults(defineProps<{
+  id?: string
+  page?: number
+  pageSize?: number
+  name?: string
+}>(), {
+  page: 1,
+  pageSize: 10,
+  name: '',
+});
 
-const changeCurrentTab = inject<Function>('changeCurrentTab')!;
+const router = useRouter();
 
+const playerInfoList = ref<PlayerInfo[]>([]);
+const { setRecordingState, setSteps, updateGameState, setGameResult } = useRecordStore();
 const { contentStyle } = useLayoutStyle({ heightProperty: 'minHeight', additionalOffset: 55 });
 
 const refGameMap = ref();
@@ -43,7 +52,14 @@ const replay = () => {
 const goBack = () => {
   pause();
   recordStore.resetRecordState();
-  changeCurrentTab(0, {});
+  router.push({
+    path: '/record',
+    query: {
+      page: props.page,
+      pageSize: props.pageSize,
+      name: props.name,
+    },
+  });
 };
 
 const doPause = () => {
@@ -54,6 +70,41 @@ const doPause = () => {
   }
   isAutoPaused.value = false;
 };
+
+const convert2DArray = (map: string): number[][] =>
+  Array.from({ length: 13 }, (_, i) =>
+    Array.from({ length: 14 }, (_, j) =>
+      Number(map[i * 14 + j] !== '0')));
+
+const { loading, startLoading, endLoading } = useLoading();
+async function initRecord() {
+  if (!props.id) {
+    $message.error('对局ID不存在');
+    return;
+  }
+  playerInfoList.value = [];
+  try {
+    startLoading();
+    const result = await RecordApi.getById(Number(props.id));
+    if (result.data.data) {
+      const { aId, aSx, aSy, bId, bSx, bSy, map, aSteps, bSteps, loser, aName = '匿名玩家', bName = '匿名玩家', aAvatar, bAvatar } = result.data.data;
+      playerInfoList.value = [
+        { name: aName, avatar: aAvatar },
+        { name: bName, avatar: bAvatar },
+      ];
+      setRecordingState(true);
+      setSteps(aSteps, bSteps);
+      updateGameState({ aId, aSx, aSy, bId, bSx, bSy, map: convert2DArray(map) });
+      setGameResult(getGameResult(loser));
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    endLoading();
+  }
+}
+
+let visibilityChangeListenerAdded = false;
 
 const handleVisibilityChange = () => {
   if (!refGameMap.value)
@@ -81,13 +132,15 @@ const handleVisibilityChange = () => {
   }
 };
 
-let visibilityChangeListenerAdded = false;
-
-onMounted(() => {
-  useLottie({
-    containerId: '#lottie-trophy',
-    path: '/lottie/trophy.json',
-  });
+onMounted(async () => {
+  initRecord();
+  await until(loading).toBe(false);
+  if (playerInfoList.value.length) {
+    useLottie({
+      containerId: '#lottie-trophy',
+      path: '/lottie/trophy.json',
+    });
+  }
 
   if (!visibilityChangeListenerAdded) {
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -135,18 +188,18 @@ onUnmounted(() => {
       </div>
     </div>
     <div flex-x-center gap-x-5vw xl:gap-x-3 pt-3vh>
-      <GameMap ref="refGameMap" h-60vh w-40vw lt-md="!w-60vw" />
-      <div v-if="props.playerInfoList?.length" w-300px ha lt-md:hidden flex-y-center mb15vh>
+      <GameMap v-if="!loading && playerInfoList.length" ref="refGameMap" h-60vh w-40vw lt-md="!w-60vw" />
+      <div v-if="playerInfoList.length" w-300px ha lt-md:hidden flex-y-center mb15vh>
         <n-card hoverable flex="col center" w-full :content-style="{ padding: '10px 20px', width: '100%' }">
           <div text="24px center" font="bold italic">
             对局信息
           </div>
           <div flex justify-between items-center w-full mt-10px>
-            <PlayerInfoCard :player="props.playerInfoList[0]" color="#4876EC" side="蓝方" />
+            <PlayerInfoCard :player="playerInfoList[0]" color="#4876EC" side="蓝方" />
             <div w80px text="50px yellow center" font="bold italic game">
               VS
             </div>
-            <PlayerInfoCard :player="props.playerInfoList[1]" color="#F94848" side="红方" />
+            <PlayerInfoCard :player="playerInfoList[1]" color="#F94848" side="红方" />
           </div>
           <GameResult :result="gameResult" />
         </n-card>
