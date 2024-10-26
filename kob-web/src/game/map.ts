@@ -7,12 +7,14 @@ const COLOR_EVEN = '#C3944E';
 const COLOR_ODD = '#A57332';
 
 export class GameMap extends Game {
+  private destroyed = false;
+
   L = 0;
   rows = 13;
   cols = 14;
   private baseCanvas: HTMLCanvasElement;
   private baseCtx: CanvasRenderingContext2D;
-  private needsBaseUpdate = true;
+  needsBaseUpdate = true;
 
   walls: Wall[] = [];
   snakes: Snake[] = [
@@ -73,6 +75,9 @@ export class GameMap extends Game {
   }
 
   update() {
+    if (this.destroyed)
+      return; // 如果已销毁，不执行更新
+
     // 1. 更新尺寸
     this.updateSize();
 
@@ -98,6 +103,9 @@ export class GameMap extends Game {
   }
 
   private render() {
+    if (this.destroyed)
+      return; // 如果已销毁，不执行渲染
+
     const { ctx, baseCanvas } = this;
 
     // 1. 确保基础层是最新的
@@ -126,9 +134,6 @@ export class GameMap extends Game {
           this.walls.push(new Wall(r, c, this));
       }
     }
-
-    // 标记需要更新底图
-    this.needsBaseUpdate = true;
   }
 
   playRecord() {
@@ -246,5 +251,9 @@ export class GameMap extends Game {
   beforeDestroy() {
     this.recordFn?.pause();
     this.task?.pause();
+  }
+
+  destroy() {
+    this.destroyed = true;
   }
 }

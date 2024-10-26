@@ -29,11 +29,17 @@ function createGameMap() {
   }
 }
 
-onMounted(createGameMap);
-
 const replayVideo = () => createGameMap();
 const pauseVideo = () => gameMap?.recordFn?.pause(); // 暂停
 const resumeVideo = () => gameMap?.recordFn?.resume(); // 取消暂停
+
+onMounted(createGameMap);
+
+onUnmounted(() => {
+  if (gameMap) {
+    gameMap.destroy();
+  }
+});
 
 defineExpose({
   replayVideo,
