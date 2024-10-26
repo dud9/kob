@@ -7,19 +7,21 @@ const COLOR_EVEN = '#C3944E';
 const COLOR_ODD = '#A57332';
 
 export class GameMap extends Game {
-  L = 0; // 1 单位长度
-  rows = 13; // 地图行数
-  cols = 14; // 地图列数
-  baseCtx: CanvasRenderingContext2D | undefined;
+  L = 0;
+  rows = 13;
+  cols = 14;
+  private baseCanvas: HTMLCanvasElement;
+  private baseCtx: CanvasRenderingContext2D;
+  private needsBaseUpdate = true;
 
-  walls: Wall[] = []; // 障碍物
-  snakes: Snake[] = [ // 蛇集合
+  walls: Wall[] = [];
+  snakes: Snake[] = [
     new Snake({ id: 0, color: '#206CCF', r: this.rows - 2, c: 1 }, this),
     new Snake({ id: 1, color: '#CB272D', r: 1, c: this.cols - 2 }, this),
   ];
 
-  recordFn: Pausable | null = null; // 录像执行方法
-  task: Pausable | null = null; // 匹配时，读取下一步操作的定时任务
+  recordFn: Pausable | null = null;
+  task: Pausable | null = null;
 
   constructor(
     public ctx: CanvasRenderingContext2D,
@@ -27,8 +29,88 @@ export class GameMap extends Game {
   ) {
     super();
 
-    this.ctx = ctx;
-    this.parent = parent;
+    // 初始化基础画布
+    this.baseCanvas = document.createElement('canvas');
+    this.baseCtx = this.baseCanvas.getContext('2d', {
+      alpha: false,
+    })!;
+  }
+
+  start() {
+    this.createWalls();
+    const { isRecording } = useRecordStore();
+
+    if (isRecording) {
+      this.playRecord();
+    } else {
+      this.addListeningEvents();
+    }
+
+    // 初始渲染底图
+    this.updateSize();
+  }
+
+  private renderBase() {
+    if (!this.needsBaseUpdate)
+      return;
+
+    const { L, cols, rows, baseCanvas, baseCtx } = this;
+    baseCanvas.width = this.ctx.canvas.width;
+    baseCanvas.height = this.ctx.canvas.height;
+
+    // 绘制棋盘底色
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        baseCtx.fillStyle = ((r + c) & 1) === 0 ? COLOR_EVEN : COLOR_ODD;
+        baseCtx.fillRect(c * L, r * L, L, L);
+      }
+    }
+
+    // 绘制墙
+    this.walls.forEach(wall => wall.render(baseCtx));
+
+    this.needsBaseUpdate = false;
+  }
+
+  update() {
+    // 1. 更新尺寸
+    this.updateSize();
+
+    // 2. 更新游戏状态
+    const { isRecording } = useRecordStore();
+
+    if (isRecording) {
+      if (this.checkSnakeReady()) {
+        this.nextStep();
+      }
+    } else if (!this.task && this.checkSnakeReady()) {
+      this.task = useIntervalFn(() => {
+        if (this.checkSnakeReady()) {
+          this.nextStep();
+          return true;
+        }
+        return false;
+      }, 100);
+    }
+
+    // 3. 渲染
+    this.render();
+  }
+
+  private render() {
+    const { ctx, baseCanvas } = this;
+
+    // 1. 确保基础层是最新的
+    this.renderBase();
+
+    // 2. 清空当前画布
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+    // 3. 绘制基础层
+    ctx.drawImage(baseCanvas, 0, 0);
+
+    // 4. 绘制蛇
+    this.snakes.forEach(snake => snake.render());
   }
 
   createWalls() {
@@ -44,6 +126,9 @@ export class GameMap extends Game {
           this.walls.push(new Wall(r, c, this));
       }
     }
+
+    // 标记需要更新底图
+    this.needsBaseUpdate = true;
   }
 
   playRecord() {
@@ -102,25 +187,16 @@ export class GameMap extends Game {
     });
   }
 
-  start() {
-    this.createWalls();
-    const { isRecording } = useRecordStore();
-    if (isRecording)
-      this.playRecord();
-    else this.addListeningEvents();
-  }
-
-  updateSize() {
+  private updateSize() {
     const { parent, cols, rows } = this;
     const { clientWidth, clientHeight } = parent;
-    this.L = Number.parseInt(String(Math.min(clientWidth / cols, clientHeight / rows)));
-    // 计算 canvas 宽高
-    this.ctx.canvas.width = this.L * cols;
-    this.ctx.canvas.height = this.L * rows;
+    const newL = Math.floor(Math.min(clientWidth / cols, clientHeight / rows));
 
-    if (this.baseCtx && this.ctx.canvas.width !== this.baseCtx.canvas.width
-      && this.ctx.canvas.height !== this.baseCtx.canvas.height) {
-      this.renderBaseCanvas();
+    if (this.L !== newL) {
+      this.L = newL;
+      this.ctx.canvas.width = this.L * cols;
+      this.ctx.canvas.height = this.L * rows;
+      this.needsBaseUpdate = true;
     }
   }
 
@@ -142,27 +218,6 @@ export class GameMap extends Game {
   nextStep() {
     for (const snake of this.snakes)
       snake.updateNextStep();
-  }
-
-  update() {
-    const { isRecording } = useRecordStore();
-    const fn = () => {
-      if (this.checkSnakeReady()) {
-        this.nextStep();
-        return true;
-      }
-      return false;
-    };
-
-    this.updateSize();
-
-    if (isRecording) { fn(); }
-    else {
-      if (!this.task && fn())
-        this.task = useIntervalFn(fn, 100);
-    }
-
-    this.render();
   }
 
   renderBaseCanvas() {
@@ -188,20 +243,8 @@ export class GameMap extends Game {
     this.walls.forEach(wall => wall.render(this.baseCtx!));
   }
 
-  render() {
-    if (!this.baseCtx) {
-      const baseCanvas = document.createElement('canvas');
-      this.baseCtx = baseCanvas.getContext('2d')!;
-      this.renderBaseCanvas();
-    }
-    if (this.baseCtx && this.baseCtx.canvas.height > 0)
-      this.ctx.drawImage(this.baseCtx.canvas, 0, 0);
-    // 画蛇
-    this.snakes.forEach(snake => snake.render());
-  }
-
   beforeDestroy() {
-    // 销毁 canvas
-    this.ctx.clearRect(0, 0, this.ctx.canvas.width, this.ctx.canvas.height);
+    this.recordFn?.pause();
+    this.task?.pause();
   }
 }
